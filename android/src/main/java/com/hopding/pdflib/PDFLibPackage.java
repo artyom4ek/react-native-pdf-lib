@@ -13,7 +13,7 @@ import com.facebook.react.bridge.JavaScriptModule;
 public class PDFLibPackage implements ReactPackage {
     @Override
     public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
-      return Arrays.<NativeModule>asList(new PDFLibModule(reactContext));
+      return Arrays.<NativeModule>asList(new MyPDFLibModule(reactContext));
     }
 
     public List<Class<? extends JavaScriptModule>> createJSModules() {
