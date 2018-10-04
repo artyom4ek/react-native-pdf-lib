@@ -5,7 +5,7 @@
 #import <React/RCTBridgeModule.h>
 #endif
 
-@interface PDFLib : NSObject <RCTBridgeModule>
+@interface MyPDFLibModule : NSObject <RCTBridgeModule>
 
 @end
 
