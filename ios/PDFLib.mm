@@ -15,7 +15,7 @@
 #import "RCTEventDispatcher.h"
 #endif
 
-@implementation PDFLib
+@implementation MyPDFLibModule
 
 RCT_EXPORT_MODULE()
 
