@@ -35,245 +35,87 @@ void PDFPageFactory::endContext () {
     // Determine if we have a PDFPage or a PDFModifiedPage
     if (this->page != nullptr) {
         pdfWriter->EndPageContentContext((PageContentContext*)context);
+        pdfWriter->WritePageAndRelease(page);
     }
     else if (this->modifiedPage != nullptr) {
         modifiedPage->EndContentContext();
+        modifiedPage->WritePage();
     }
     else {
         throw std::invalid_argument(@"No pages found - this should never happen!".UTF8String);
     }
 }
 
-void PDFPageFactory::createAndWrite (PDFWriter* pdfWriter, NSDictionary* pageActions) {
+void PDFPageFactory::createAndWrite (NSString* documentPath, PDFWriter* pdfWriter, NSDictionary* pageActions) {
     PDFPage* page = new PDFPage();
     PDFPageFactory factory(pdfWriter, page);
     
     NumberPair coords = getCoords(pageActions[@"mediaBox"]);
     NumberPair dims   = getDims(pageActions[@"mediaBox"]);
-    page->SetMediaBox(PDFRectangle(coords.a.intValue,
-                                   coords.b.intValue,
-                                   dims.a.intValue,
-                                   dims.b.intValue));
-    factory.applyActions(pageActions[@"actions"]);
-    factory.endContext();
-    pdfWriter->WritePageAndRelease(page);
+    NSInteger pageIndex = [RCTConvert NSInteger:pageActions[@"pageIndex"]];
+    page->SetMediaBox(PDFRectangle(coords.a.intValue, coords.b.intValue, dims.a.intValue, dims.b.intValue));
+    
 }
 
-void PDFPageFactory::modifyAndWrite (PDFWriter* pdfWriter, NSDictionary* pageActions) {
+void PDFPageFactory::modifyAndWrite (NSString* documentPath, PDFWriter* pdfWriter, NSDictionary* pageActions) {
     NSInteger pageIndex = [RCTConvert NSInteger:pageActions[@"pageIndex"]];
     PDFModifiedPage page(pdfWriter, pageIndex);
     PDFPageFactory factory(pdfWriter, &page);
     
-    factory.applyActions(pageActions[@"actions"]);
-    factory.endContext();
-    page.WritePage();
+    factory.drawImageOnPdf(documentPath, pageIndex, pageActions[@"actions"]);
 }
 
-void PDFPageFactory::applyActions (NSDictionary* actions) {
-    // Add any necessary FormXObjects before opening the Page's ContentContext
-    for (NSDictionary *action in actions) {
-        NSString *type = [RCTConvert NSString:action[@"type"]];
-        if ([type isEqualToString:@"image"]) {
-            addPDFImageFormXObject(action);
-        }
-    }
+void PDFPageFactory::drawImageOnPdf(NSString *pdfPath, NSInteger pageIndex, NSArray *imageActions) {
+    NSData *oldPdfData = [NSData dataWithContentsOfFile:pdfPath];
+    NSURL* oldPdfURL = [NSURL fileURLWithPath:pdfPath];
     
-    // Start the Page's ContentContext
-    if (page != nullptr) {
-        context = pdfWriter->StartPageContentContext(page);
-    }
-    else if (modifiedPage != nullptr) {
-        context = modifiedPage->StartContentContext();
-    }
-    else {
-        throw std::invalid_argument(@"No pages found - this should never happen!".UTF8String);
-    }
+    CGPDFDocumentRef oldPdf = CGPDFDocumentCreateWithURL((CFURLRef)oldPdfURL);
     
-    // Operate on the Page's ContentContext
-    for (NSDictionary *action in actions) {
-        NSString *type = [RCTConvert NSString:action[@"type"]];
-        if ([type isEqualToString:@"text"]) {
-            drawText(action);
-        }
-        else if([type isEqualToString:@"rectangle"]) {
-            drawRectangle(action);
-        }
-        else if([type isEqualToString:@"image"]) {
-            drawImage(action);
-        }
-    }
-}
-
-// Add a FormXObject to the PDFWriter for the image specified in the given `pdfImageActions`.
-void PDFPageFactory::addPDFImageFormXObject (NSDictionary* pdfImageActions) {
-    NSString *imageType = [RCTConvert NSString:pdfImageActions[@"imageType"]];
-    NSString *imagePath = [RCTConvert NSString:pdfImageActions[@"imagePath"]];
-    AbstractContentContext::ImageOptions options;
+    NSMutableData* modifiedPdfData = [NSMutableData new];
+    CGDataConsumerRef dataConsumer = CGDataConsumerCreateWithCFData((CFMutableDataRef)modifiedPdfData);
     
-    if ([imageType isEqualToString:@"png"]) {
-        if(![[NSFileManager defaultManager] fileExistsAtPath:imagePath]) {
-            NSString *msg = [NSString stringWithFormat:@"%@%@", @"No image found at path: ", imagePath];
-            throw std::invalid_argument(msg.UTF8String);
-        }
-        
-        UIImage* image   = [UIImage imageWithContentsOfFile:imagePath];
-        NSData* imagePDF = PDFPageFactory::convertImageToPDF(image);
-        
-        IOBasicTypes::Byte* bytes = (unsigned char*)[imagePDF bytes];
-        InputByteArrayStream imageStream(bytes, [imagePDF length]*sizeof(char));
-        EStatusCodeAndObjectIDTypeList result = pdfWriter->CreateFormXObjectsFromPDF((IByteReaderWithPosition*)&imageStream,
-                                                                                     PDFPageRange(),
-                                                                                     ePDFPageBoxMediaBox);
-        if (result.first == EStatusCode::eFailure) {
-            throw std::invalid_argument(@"Failed to embed PDF!".UTF8String);
-        }
-        
-        // Store the FormXObject's ID under the key for the image
-        formXObjectMap.insert(std::pair<NSString*, unsigned long>(imagePath, result.second.front()));
-    }
-}
-
-void PDFPageFactory::drawText (NSDictionary* textActions) {
-    NSString* value    = [RCTConvert NSString:textActions[@"value"]];
-    NSString* fontName = [RCTConvert NSString:textActions[@"fontName"]];
-    NSInteger fontSize = [RCTConvert NSInteger:textActions[@"fontSize"]];
-    NumberPair coords  = getCoords(textActions);
-    unsigned hexColor  = hexIntFromString(textActions[@"color"]);
-
-    NSString *fontPath = [[NSBundle mainBundle] pathForResource:fontName ofType:@".ttf"];
-    PDFUsedFont* font  = pdfWriter->GetFontForFile(fontPath.UTF8String);
-
-    AbstractContentContext::TextOptions textOptions(font, fontSize, AbstractContentContext::eRGB, hexColor);
-    context->WriteText(coords.a.intValue, coords.b.intValue, value.UTF8String, textOptions);
-}
-
-void PDFPageFactory::drawRectangle (NSDictionary* rectActions) {
-    NumberPair coords = getCoords(rectActions);
-    NumberPair dims   = getDims(rectActions);
-    unsigned hexColor = hexIntFromString(rectActions[@"color"]);
+    CFMutableDictionaryRef attrDictionary = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(attrDictionary, kCGPDFContextTitle, CFSTR(""));
+    CGContextRef pdfContext = CGPDFContextCreate(dataConsumer, NULL, attrDictionary);
+    CFRelease(dataConsumer);
+    CFRelease(attrDictionary);
     
-    AbstractContentContext::GraphicOptions options(AbstractContentContext::eFill,
-                                                   AbstractContentContext::eRGB,
-                                                   hexColor);
-    context->DrawRectangle(coords.a.intValue,
-                           coords.b.intValue,
-                           dims.a.intValue,
-                           dims.b.intValue,
-                           options);
-}
-
-void PDFPageFactory::drawImage (NSDictionary* imageActions) {
-    NSString *imageType = [RCTConvert NSString:imageActions[@"imageType"]];
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef) oldPdfData);
+    CGPDFDocumentRef modifiedPdf = CGPDFDocumentCreateWithProvider(provider);
+    CGDataProviderRelease(provider);
     
-    if ([imageType isEqualToString:@"jpg"]) {
-        NSString *imagePath = [RCTConvert NSString:imageActions[@"imagePath"]];
-        NumberPair coords   = getCoords(imageActions);
-        NumberPair dims     = getDims(imageActions);
-        AbstractContentContext::ImageOptions options;
+    for (int k = 1; k <= CGPDFDocumentGetNumberOfPages(oldPdf); k++) {
+        CGPDFPageRef page = CGPDFDocumentGetPage(modifiedPdf, k);
+        CGRect pageRect = CGPDFPageGetBoxRect(page, kCGPDFMediaBox);
+        CGContextBeginPage(pdfContext, &pageRect);
+        CGContextDrawPDFPage(pdfContext, page);
         
-        if (dims.a && dims.b) {
-            options.transformationMethod = AbstractContentContext::EImageTransformation::eFit;
-            options.fitPolicy            = AbstractContentContext::EFitPolicy::eAlways;
-            options.boundingBoxWidth     = dims.a.intValue;
-            options.boundingBoxHeight    = dims.b.intValue;
-        }
-        
-        if(![[NSFileManager defaultManager] fileExistsAtPath:imagePath]) {
-            NSString *msg = [NSString stringWithFormat:@"%@%@", @"No image found at path: ", imagePath];
-            throw std::invalid_argument(msg.UTF8String);
-        }
-        context->DrawImage(coords.a.intValue, coords.b.intValue, imagePath.UTF8String, options);
-    }
-    else if ([imageType isEqualToString:@"png"]) {
-        drawImageAsPDF(imageActions);
-    }
-}
-
-void PDFPageFactory::drawImageAsPDF (NSDictionary* imageActions) {
-    // Initialize relevant variables
-    NSString *imageType = [RCTConvert NSString:imageActions[@"imageType"]];
-    NSString *imagePath = [RCTConvert NSString:imageActions[@"imagePath"]];
-    NumberPair coords   = getCoords(imageActions);
-    NumberPair dims     = getDims(imageActions);
-    AbstractContentContext::ImageOptions options;
-    
-    // Only go this for JPGs & PNGs
-    if ([imageType isEqualToString:@"jpg"] || [imageType isEqualToString:@"png"]) {
-        UIImage* image = [UIImage imageWithContentsOfFile:imagePath];
-
-        if (dims.a && dims.b) {
-            options.transformationMethod = AbstractContentContext::EImageTransformation::eFit;
-            options.fitPolicy            = AbstractContentContext::EFitPolicy::eAlways;
-            options.boundingBoxWidth     = dims.a.intValue;
-            options.boundingBoxHeight    = dims.b.intValue;
-//            options.fitProportional = true;
-        }
-        
-        double transformation[6] = {1,0,0,1,0,0};
-        /* --- Adjust transform matrix to scale the image appropriately --- */
-        if(options.transformationMethod == AbstractContentContext::eMatrix) {
-            for(int i = 0; i < 6; ++i)
-                transformation[i] = options.matrix[i];
-        }
-        else if(options.transformationMethod == AbstractContentContext::eFit) {
-            double scaleX = 1;
-            double scaleY = 1;
-            
-            if(options.fitPolicy == AbstractContentContext::eAlways) {
-                scaleX = options.boundingBoxWidth  / [image size].width;
-                scaleY = options.boundingBoxHeight / [image size].height;
+        if (k == pageIndex + 1) {
+            for (NSDictionary* action in imageActions) {
+                NSDictionary* imageInfo = [RCTConvert NSDictionary: action];
+                NSString* imagePath = [RCTConvert NSString:imageInfo[@"imagePath"]];
+                UIImage* signatureImage = [UIImage imageWithContentsOfFile:imagePath];
+                
+                NumberPair coordinates = getCoords(imageInfo);
+                NumberPair dimensions = getDims(imageInfo);
+                
+                CGFloat x = [coordinates.a floatValue];
+                CGFloat y = [coordinates.b floatValue];
+                CGFloat width = [dimensions.a floatValue];
+                CGFloat height = [dimensions.b floatValue];
+                
+                pageRect = CGRectMake(x, y, width, height);
+                
+                CGImageRef pageImage = [signatureImage CGImage];
+                CGContextDrawImage(pdfContext, pageRect, pageImage);
             }
-            else if([image size].width  > options.boundingBoxWidth ||
-                    [image size].height > options.boundingBoxHeight)
-            { // Overflow
-                scaleX = [image size].width  > options.boundingBoxWidth  ? options.boundingBoxWidth  / [image size].width  : 1;
-                scaleY = [image size].height > options.boundingBoxHeight ? options.boundingBoxHeight / [image size].height : 1;
-            }
-            
-            if(options.fitProportional) {
-                scaleX = std::min(scaleX, scaleY);
-                scaleY = scaleX;
-            }
-            
-            transformation[0] = scaleX;
-            transformation[3] = scaleY;
         }
-        
-        transformation[4] += coords.a.intValue;
-        transformation[5] += coords.b.intValue;
-        /* ----------------------------------------------------------------- */
-        
-        // Retrieve & use the formXObject that we previously generated for this image
-        std::string formXObjectName = getResourcesDict()->AddFormXObjectMapping(formXObjectMap.at(imagePath));
-        
-        // Draw on the page's context
-        context->q();
-        context->cm(transformation[0],
-                    transformation[1],
-                    transformation[2],
-                    transformation[3],
-                    transformation[4],
-                    transformation[5]);
-        context->Do(formXObjectName);
-        context->Q();
+        CGPDFContextEndPage(pdfContext);
     }
-}
-
-NSData* PDFPageFactory::convertImageToPDF (UIImage* image) {
-    NSMutableData *pdfData = [[NSMutableData alloc] init];
-    CGDataConsumerRef dataConsumer = CGDataConsumerCreateWithCFData((CFMutableDataRef)pdfData);
-    const CGRect mediaBox = CGRectMake(0.0f, 0.0f, [image size].width, [image size].height);
-    CGContextRef pdfContext = CGPDFContextCreate(dataConsumer, &mediaBox, NULL);
-    
-    CGContextBeginPage(pdfContext, &mediaBox);
-    CGContextDrawImage(pdfContext, mediaBox, [image CGImage]);
-    CGContextEndPage(pdfContext);
-    
     CGPDFContextClose(pdfContext);
     CGContextRelease(pdfContext);
-    CGDataConsumerRelease(dataConsumer);
     
-    return pdfData;
+    [modifiedPdfData writeToFile:pdfPath atomically:YES];
 }
 
 NumberPair PDFPageFactory::getCoords (NSDictionary* coordsMap) {
@@ -303,36 +145,3 @@ unsigned PDFPageFactory::hexIntFromString (NSString* hexStr) {
     [scanner scanHexInt:&hexColor];
     return hexColor;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

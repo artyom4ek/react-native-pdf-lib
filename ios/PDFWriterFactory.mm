@@ -19,7 +19,7 @@ NSString* PDFWriterFactory::create (NSDictionary* documentActions) {
     }
     
     // Process pages
-    factory.addPages(documentActions[@"pages"]);
+//    factory.addPages(path, documentActions[@"pages"]);
     
     esc = pdfWriter.EndPDF();
     if (esc == EStatusCode::eFailure) {
@@ -42,67 +42,25 @@ NSString* PDFWriterFactory::modify(NSDictionary* documentActions) {
         return nil;
     }
     
-    // Add pages
-    factory.addPages(documentActions[@"pages"]);
-    
     // Modify pages
-    factory.modifyPages(documentActions[@"modifyPages"]);
+    factory.modifyPages(path, documentActions[@"modifyPages"]);
     
     esc = pdfWriter.EndPDF();
     if (esc == EStatusCode::eFailure) {
         return nil;
     }
     
-    return path;
+    return path ;
 }
 
-void PDFWriterFactory::addPages (NSArray* pages) {
+void PDFWriterFactory::addPages (NSString* documentPath, NSArray* pages) {
     for (NSDictionary *pageActions in pages) {
-        PDFPageFactory::createAndWrite(pdfWriter, pageActions);
+        PDFPageFactory::createAndWrite(documentPath, pdfWriter, pageActions);
     }
 }
 
-void PDFWriterFactory::modifyPages (NSArray* pages) {
+void PDFWriterFactory::modifyPages (NSString* documentPath, NSArray* pages) {
     for (NSDictionary *pageActions in pages) {
-        PDFPageFactory::modifyAndWrite(pdfWriter, pageActions);
+        PDFPageFactory::modifyAndWrite(documentPath, pdfWriter, pageActions);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

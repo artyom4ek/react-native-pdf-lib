@@ -8,8 +8,8 @@ class PDFWriterFactory {
 private:
     PDFWriter* pdfWriter;
     PDFWriterFactory (PDFWriter*);
-    void addPages    (NSArray* pageActions);
-    void modifyPages (NSArray* pageActions);
+    void addPages    (NSString* documentPath, NSArray* pageActions);
+    void modifyPages (NSString* documentPath, NSArray* pageActions);
     
 public:
     static NSString* create (NSDictionary* pages);
